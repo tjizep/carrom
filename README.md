@@ -7,7 +7,7 @@ Open `index.html` in a browser (or serve the folder with any static server, or t
 ## The scene
 - Tournament-size board: 74 × 74 cm playing surface, 4.45 cm pockets, regulation baselines, arrows and centre rosette
 - Polished dark jade playing surface with live mirror reflections, procedural nephrite texture
-- French-polished rosewood frame and table
+- Smoky translucent orange frame on a lacquered birch table with a few dark grain lines
 - Hollow ring striker, 19 coins in the standard break formation
 - Room with sky-blue panel walls, grey tiled floor, orange disc uplights and hanging red resin balls
 
