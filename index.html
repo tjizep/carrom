@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Carrom Table 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Yatra+One&family=Hind:wght@400;500;600&display=swap">
+<style>
+/* Layout: full-bleed 3D room, a small name plate top-left, one control tray docked at the bottom. Single committed dark "evening room" look. */
+:root{
+  --room:#17110c;
+  --tray:rgba(30,22,16,.86);
+  --line:rgba(243,234,216,.14);
+  --ivory:#f3ead8;
+  --muted:#b9a88f;
+  --red:#c8372d;
+  --display:"Yatra One","Georgia",serif;
+  --body:"Hind","Segoe UI",system-ui,sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%}
+[hidden]{display:none!important}
+body{background:var(--room);color:var(--ivory);font-family:var(--body);overflow:hidden;margin:0}
+#stage{position:fixed;inset:0;display:block;width:100%;height:100%;touch-action:none;cursor:grab;outline:none}
+#stage:active{cursor:grabbing}
+#stage:focus-visible{box-shadow:inset 0 0 0 2px var(--red)}
+.plate{position:fixed;left:16px;top:calc(env(safe-area-inset-top,0px) + 14px);pointer-events:none;display:grid;gap:2px}
+.plate h1{font-family:var(--display);font-weight:400;font-size:1.6rem;line-height:1;margin:0;letter-spacing:.01em}
+.plate p{margin:0;font-size:.82rem;color:var(--muted);letter-spacing:.02em}
+.plate .hint{margin-top:6px;font-size:.78rem;color:var(--muted);opacity:.9}
+.tray{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 14px);
+  width:min(560px,calc(100% - 32px));background:var(--tray);border:1px solid var(--line);border-radius:14px;
+  padding:12px 14px;display:grid;gap:10px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.row{display:grid;grid-template-columns:5.6rem 1fr 4.2rem;align-items:center;gap:10px}
+.row label{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.row output{font-variant-numeric:tabular-nums;text-align:right;font-weight:500;font-size:.92rem}
+input[type=range]{width:100%;accent-color:var(--red);height:28px;margin:0}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+button{font:inherit;font-size:.86rem;font-weight:500;color:var(--ivory);background:transparent;border:1px solid var(--line);
+  border-radius:999px;padding:6px 14px;cursor:pointer;min-height:34px}
+button:hover{border-color:var(--muted)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+button.primary{background:var(--red);border-color:var(--red)}
+.pill{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);
+  pointer-events:none;background:var(--tray);border:1px solid rgba(200,55,45,.7);border-radius:999px;
+  padding:7px 14px;font-size:.84rem;text-align:center;width:max-content;max-width:calc(100% - 32px)}
+.pill b{color:#ff8a7d;font-weight:600}
+@media (max-width:420px){.row{grid-template-columns:4.6rem 1fr 3.8rem}.plate h1{font-size:1.35rem}}
+</style>
+</head>
+<body>
+<canvas id="stage" tabindex="0" aria-label="3D carrom board. Drag to orbit, drag up or down to change height, pinch or scroll to zoom. Arrow keys also work."></canvas>
+
+<div class="plate">
+  <h1>Carrom</h1>
+  <p>Tournament size · 74 × 74 cm playing surface</p>
+  <p class="hint">Drag sideways to orbit · up/down for height · pinch to zoom · arm the striker to play</p>
+</div>
+
+<div class="tray" id="tray">
+  <div class="row view">
+    <label for="hRange">Eye height</label>
+    <input id="hRange" type="range" min="45" max="300" step="1" value="150">
+    <output id="hOut">1.50 m</output>
+  </div>
+  <div class="row view">
+    <label for="dRange">Distance</label>
+    <input id="dRange" type="range" min="0" max="300" step="1" value="110">
+    <output id="dOut">1.10 m</output>
+  </div>
+  <div class="btns view">
+    <button id="bPlayer">Player's seat</button>
+    <button id="bTop">Top down</button>
+    <button id="bLow">Board level</button>
+    <button id="bWide">Room view</button>
+  </div>
+  <div class="btns">
+    <button id="bArm" class="primary">Arm striker</button>
+    <button id="bReset">Reset coins</button>
+  </div>
+</div>
+
+<div class="pill" id="pill" hidden><b>Armed</b> · flick from the striker · double-tap to disarm</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/objects/Reflector.js"></script>
+<script>
+(function(){
+/* ---------- real dimensions (metres) ---------- */
+const L = 0.74;              // playing surface side
+const HL = L/2;
+const FRAME = 0.075;         // frame width
+const POCKET_R = 0.0445/2;   // pocket diameter 4.45 cm
+const COIN_R = 0.0318/2;     // coin diameter 3.18 cm
+const COIN_H = 0.012;      // a touch taller than regulation so their reflections read
+const STRIKER_R = 0.064/2;   // hollow ring striker: 6.4 cm outside
+const STRIKER_IN = 0.048/2;  // 4.8 cm inside, so the wall difference is about one coin radius
+const STRIKER_H = 0.011;
+const TABLE_TOP = 0.72;      // table height
+const FEET = 0.012;
+const FRAME_H = 0.055;
+const SURF = TABLE_TOP + FEET + FRAME_H - 0.012; // surface sits 12 mm below the frame lip
+
+/* ---------- renderer ---------- */
+const canvas = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fb4c0);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 30);   // near plane kept off 0.01 so 16-bit phone depth buffers stay precise
+const target = new THREE.Vector3(0, SURF, 0);
+
+/* ---------- lights ---------- */
+scene.add(new THREE.HemisphereLight(0xffe6cc, 0x3a3634, 0.5));   // warm bounce from the orange ceiling
+const key = new THREE.SpotLight(0xffe2b8, 2.2, 8, Math.PI/5, 0.55, 1.2);
+key.position.set(0.35, SURF + 2.2, 0.25);
+key.target.position.copy(target);
+key.castShadow = true;
+key.shadow.mapSize.setScalar(matchMedia("(pointer: coarse)").matches ? 1024 : 2048);
+key.shadow.bias = -0.00015;
+key.shadow.camera.near = 0.5; key.shadow.camera.far = 6;
+scene.add(key, key.target);
+const fill = new THREE.DirectionalLight(0xb9c6ff, 0.25);
+fill.position.set(-3, 2.5, -2);
+scene.add(fill);
+
+/* ---------- canvas texture helpers ---------- */
+function rand(seed){ let s = seed; return () => (s = (s*16807) % 2147483647) / 2147483647; }
+
+function woodCanvas(size, base, dark, light, seed, streaks){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'); const r = rand(seed);
+  g.fillStyle = base; g.fillRect(0,0,size,size);
+  for(let i=0;i<streaks;i++){
+    const y = r()*size, amp = 2 + r()*10, freq = 0.002 + r()*0.01, ph = r()*6.28;
+    g.strokeStyle = r() < 0.6 ? dark : light;
+    g.globalAlpha = 0.04 + r()*0.12;
+    g.lineWidth = 0.6 + r()*2.6;
+    g.beginPath();
+    for(let x=0;x<=size;x+=8){
+      const yy = y + Math.sin(x*freq+ph)*amp + Math.sin(x*freq*3.1+ph*2)*amp*0.3;
+      x===0 ? g.moveTo(x,yy) : g.lineTo(x,yy);
+    }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  return c;
+}
+function tex(c, rx=1, ry=1){
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+
+/* ---------- procedural nephrite jade ----------
+   Domain-warped fractal noise gives the slow, cloudy body colour of the stone;
+   ridged noise gives fine fibrous veins; a high-frequency threshold gives the
+   small dark mineral specks real jade carries. Painted at 1024 px and scaled up,
+   since the stone is soft-edged anyway. */
+function jadeCanvas(N){
+  const M = 1024;
+  const perm = new Uint8Array(512), r = rand(1234);
+  const base = [...Array(256).keys()];
+  for(let i=255;i>0;i--){ const j = Math.floor(r()*(i+1)); [base[i],base[j]] = [base[j],base[i]]; }
+  for(let i=0;i<512;i++) perm[i] = base[i & 255];
+  const hash = (x,y) => perm[(perm[x & 255] + y) & 511] / 255;
+  const fade = t => t*t*(3-2*t);
+  function noise(x,y){
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x-xi, yf = y-yi, u = fade(xf), v = fade(yf);
+    const a = hash(xi,yi), b = hash(xi+1,yi), c = hash(xi,yi+1), d = hash(xi+1,yi+1);
+    return a + (b-a)*u + (c-a)*v + (a-b-c+d)*u*v;
+  }
+  function fbm(x,y,oct){ let s = 0, amp = 0.5, f = 1, norm = 0;
+    for(let o=0;o<oct;o++){ s += amp*noise(x*f + o*17.3, y*f - o*9.1); norm += amp; amp *= 0.5; f *= 2.03; }
+    return s/norm; }
+  const mix = (a,b,t) => a + (b-a)*t;
+  const ss = (e0,e1,x) => { const t = Math.min(1, Math.max(0, (x-e0)/(e1-e0))); return t*t*(3-2*t); };
+  // colour stops: deep spinach green -> body green -> milky light jade
+  const deep = [6,34,22], body = [16,74,46], milk = [46,118,80], vein = [120,182,142], speck = [4,14,9];
+  const img = new ImageData(M, M), px = img.data;
+  for(let y=0;y<M;y++){
+    for(let x=0;x<M;x++){
+      const u = x/M*5, v = y/M*5;
+      // warped clouds
+      const qx = fbm(u, v, 4), qy = fbm(u+5.2, v+1.3, 4);
+      const cl = fbm(u + 3.2*qx, v + 3.2*qy, 5);
+      // fibrous veins: ridged noise, stretched along a slow diagonal flow
+      const wv = fbm(u*1.6 + 2*qy, v*0.7 + 2*qx, 5);
+      const ridge = Math.pow(1 - Math.abs(wv*2 - 1), 22);
+      // fine crystalline grain
+      const grain = noise(x*0.35, y*0.35) - 0.5;
+      // mineral specks
+      const sp = 0.65*noise(x*0.07 + 40, y*0.07 - 12) + 0.35*noise(x*0.19 - 7, y*0.19 + 3);
+      const speckAmt = 0.8 * ss(0.80, 0.86, sp) * ss(0.5, 0.75, cl);
+      let t = Math.pow(ss(0.28, 0.82, cl), 1.35);
+      t = Math.min(1, Math.max(0, t + (fbm(u*3.3 + 9, v*3.3, 3) - 0.5)*0.22*(1 - t)));   // depth inside the dark stone
+      let R = t < 0.5 ? mix(deep[0], body[0], t*2) : mix(body[0], milk[0], (t-0.5)*2);
+      let G = t < 0.5 ? mix(deep[1], body[1], t*2) : mix(body[1], milk[1], (t-0.5)*2);
+      let B = t < 0.5 ? mix(deep[2], body[2], t*2) : mix(body[2], milk[2], (t-0.5)*2);
+      const vAmt = ridge * 0.3 * ss(0.35, 0.65, cl);
+      R = mix(R, vein[0], vAmt); G = mix(G, vein[1], vAmt); B = mix(B, vein[2], vAmt);
+      R = mix(R, speck[0], speckAmt); G = mix(G, speck[1], speckAmt); B = mix(B, speck[2], speckAmt);
+      const gr = grain * 5;
+      const i = (y*M + x)*4;
+      px[i] = R + gr; px[i+1] = G + gr*1.2; px[i+2] = B + gr; px[i+3] = 255;
+    }
+  }
+  const small = document.createElement('canvas'); small.width = small.height = M;
+  small.getContext('2d').putImageData(img, 0, 0);
+  const c = document.createElement('canvas'); c.width = c.height = N;
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(small, 0, 0, N, N);
+  return c;
+}
+
+/* ---------- playing surface artwork (to scale) ---------- */
+function surfaceCanvas(){
+  const N = 2048, S = N / L;
+  const c = jadeCanvas(N);
+  const g = c.getContext('2d');
+  const P = v => (v + HL) * S;      // metres from centre -> px
+  const ink = '#e6d9b6', red = '#c4372c';
+  const lw = 0.0012 * S;
+
+  // baselines: two lines 47 cm long, 3.18 cm apart, outer line 10.15 cm from the edge, with red base circles
+  const outer = HL - 0.1015, inner = outer - 0.0318, mid = (outer+inner)/2, half = 0.235;
+  for(let k=0;k<4;k++){
+    g.save(); g.translate(N/2, N/2); g.rotate(k*Math.PI/2); g.translate(-N/2,-N/2);
+    g.strokeStyle = ink; g.lineWidth = lw;
+    [outer, inner].forEach(y => { g.beginPath(); g.moveTo(P(-half), P(y)); g.lineTo(P(half), P(y)); g.stroke(); });
+    [-half, half].forEach(x => {
+      g.beginPath(); g.arc(P(x), P(mid), COIN_R*S, 0, Math.PI*2);
+      g.fillStyle = red; g.fill(); g.stroke();
+      g.beginPath(); g.arc(P(x), P(mid), COIN_R*S*0.62, 0, Math.PI*2);
+      g.strokeStyle = '#f3dcae'; g.lineWidth = lw*0.8; g.stroke();
+      g.strokeStyle = ink; g.lineWidth = lw;
+    });
+    g.restore();
+  }
+
+  // diagonal arrows: 26.7 cm long, starting 5 cm from the pocket edge
+  const diagHalf = HL*Math.SQRT2;
+  const pocketCentre = diagHalf - POCKET_R*Math.SQRT2;
+  const dStart = pocketCentre - POCKET_R - 0.05;
+  const dEnd = dStart - 0.267;
+  for(let k=0;k<4;k++){
+    const a = Math.PI/4 + k*Math.PI/2;
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const sx = P(ux*dStart), sy = P(uy*dStart), ex = P(ux*dEnd), ey = P(uy*dEnd);
+    g.strokeStyle = ink; g.lineWidth = lw*1.1;
+    g.beginPath(); g.moveTo(sx,sy); g.lineTo(ex,ey); g.stroke();
+    // arrow head pointing to the pocket
+    const hl = 0.018*S, hw = 0.008*S, px = -uy, py = ux;
+    g.beginPath();
+    g.moveTo(sx, sy);
+    g.lineTo(sx - ux*hl + px*hw, sy - uy*hl + py*hw);
+    g.lineTo(sx - ux*hl - px*hw, sy - uy*hl - py*hw);
+    g.closePath(); g.fillStyle = ink; g.fill();
+    // arc at the inner end (6.35 cm diameter)
+    g.beginPath(); g.arc(ex, ey, 0.03175*S, a - 1.25, a + 1.25); g.stroke();
+  }
+
+  // centre: outer circle 17 cm, rosette, red centre circle 3.18 cm
+  const cx = N/2;
+  g.strokeStyle = ink; g.lineWidth = lw;
+  g.beginPath(); g.arc(cx, cx, 0.085*S, 0, Math.PI*2); g.stroke();
+  g.beginPath(); g.arc(cx, cx, 0.080*S, 0, Math.PI*2); g.stroke();
+  for(let i=0;i<8;i++){
+    g.save(); g.translate(cx,cx); g.rotate(i*Math.PI/4);
+    g.beginPath(); g.ellipse(0.046*S, 0, 0.028*S, 0.010*S, 0, 0, Math.PI*2);
+    g.fillStyle = i%2 ? red : '#d8c69a'; g.globalAlpha = 0.9; g.fill(); g.globalAlpha = 1;
+    g.lineWidth = lw*0.8; g.stroke();
+    g.restore();
+  }
+  g.beginPath(); g.arc(cx, cx, 0.0255*S, 0, Math.PI*2); g.stroke();
+  g.beginPath(); g.arc(cx, cx, COIN_R*S, 0, Math.PI*2); g.fillStyle = red; g.fill(); g.stroke();
+
+  // pocket rims (darkened edge around the hole)
+  [[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([sx,sy])=>{
+    const x = sx*(HL-POCKET_R), y = sy*(HL-POCKET_R);
+    g.beginPath(); g.arc(P(x), P(y), (POCKET_R+0.002)*S, 0, Math.PI*2);
+    g.strokeStyle = 'rgba(40,24,12,.55)'; g.lineWidth = 0.004*S; g.stroke();
+  });
+  return c;
+}
+
+/* Indian rosewood: broad bands of deep red-brown with a violet cast, dense near-black streaks
+   running with the grain, and fine open pores. */
+function rosewoodCanvas(size, seed){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'), r = rand(seed);
+  const bands = ['#5a2216','#43170e','#6a2c1c','#4d1a14','#371109','#5e2618'];
+  let y = 0;
+  while(y < size){
+    const h = 6 + r()*size*0.08;
+    g.fillStyle = bands[Math.floor(r()*bands.length)];
+    g.globalAlpha = 1; g.fillRect(0, y, size, h + 2);
+    y += h;
+  }
+  // soften band edges
+  g.globalAlpha = 0.5; g.filter = 'blur(6px)'; g.drawImage(c, 0, 0); g.filter = 'none';
+  const streak = (count, colour, aMin, aMax, wMin, wMax) => {
+    for(let i=0;i<count;i++){
+      const y0 = r()*size, amp = 1 + r()*6, f = 0.002 + r()*0.008, ph = r()*6.28;
+      g.strokeStyle = colour; g.globalAlpha = aMin + r()*(aMax-aMin); g.lineWidth = wMin + r()*(wMax-wMin);
+      g.beginPath();
+      for(let x=-8;x<=size+8;x+=8){ const yy = y0 + Math.sin(x*f+ph)*amp + Math.sin(x*f*2.7+ph)*amp*0.35; x<0 ? g.moveTo(x,yy) : g.lineTo(x,yy); }
+      g.stroke();
+    }
+  };
+  streak(260, '#120403', 0.12, 0.55, 0.6, 3.2);   // dark grain lines
+  streak(60, '#1b0606', 0.25, 0.6, 3, 9);         // occasional heavy dark figure
+  streak(120, '#8a4128', 0.06, 0.18, 0.5, 2);     // warm lighter flecks
+  // pores
+  g.fillStyle = '#0d0302';
+  for(let i=0;i<size*size/90;i++){ g.globalAlpha = 0.25 + r()*0.4; g.fillRect(r()*size, r()*size, 1.5 + r()*4, 0.8); }
+  g.globalAlpha = 1;
+  return c;
+}
+
+/* ---------- materials ---------- */
+// polished jade: solid stone with a hard clear coat. Reflections are added on top in a separate pass.
+// The stone body is purely diffuse (no broad sheen of its own: that sheen is what read as a plastic film).
+// All gloss comes from a perfectly smooth clear layer: the lamp's sharp highlight here, the mirror image in the pass below.
+const mSurface = new THREE.MeshPhysicalMaterial({map: tex(surfaceCanvas()), roughness:1, metalness:0, reflectivity:0,
+  clearcoat:1, clearcoatRoughness:0.0});
+// French-polished rosewood: diffuse wood under a hard, smooth clear finish
+const woodPolish = {roughness:0.6, metalness:0, reflectivity:0.15, clearcoat:1, clearcoatRoughness:0.03, envMapIntensity:0.9};
+const mFrame = new THREE.MeshPhysicalMaterial({map: tex(rosewoodCanvas(1024, 3), 3, 3), ...woodPolish});
+const mPly = new THREE.MeshStandardMaterial({color:0x6b4a2e, roughness:0.85});
+const mTable = new THREE.MeshPhysicalMaterial({map: tex(rosewoodCanvas(1024, 11), 1.2, 1.2), ...woodPolish});
+const mLeg = new THREE.MeshPhysicalMaterial({map: tex(rosewoodCanvas(512, 5), 1, 3), ...woodPolish});
+const mNet = new THREE.MeshStandardMaterial({color:0x1a1411, roughness:1, side:THREE.DoubleSide});
+const mHole = new THREE.MeshStandardMaterial({color:0x0b0806, roughness:1, side:THREE.BackSide});
+const mRubber = new THREE.MeshStandardMaterial({color:0x111111, roughness:0.9});
+
+/* ---------- table ---------- */
+const table = new THREE.Group();
+const TT = 0.035, TW = 1.0;
+const top = new THREE.Mesh(new THREE.BoxGeometry(TW, TT, TW), mTable);
+top.position.y = TABLE_TOP - TT/2; top.castShadow = top.receiveShadow = true; table.add(top);
+const legH = TABLE_TOP - TT, legW = 0.055;
+[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([sx,sz])=>{
+  const leg = new THREE.Mesh(new THREE.BoxGeometry(legW, legH, legW), mLeg);
+  leg.position.set(sx*(TW/2-0.06), legH/2, sz*(TW/2-0.06));
+  leg.castShadow = leg.receiveShadow = true; table.add(leg);
+});
+for(let k=0;k<4;k++){
+  const apron = new THREE.Mesh(new THREE.BoxGeometry(TW-0.14, 0.08, 0.022), mLeg);
+  const ang = k*Math.PI/2;
+  apron.position.set(Math.sin(ang)*(TW/2-0.06), TABLE_TOP-TT-0.04, Math.cos(ang)*(TW/2-0.06));
+  apron.rotation.y = ang; apron.castShadow = true; table.add(apron);
+}
+scene.add(table);
+
+/* ---------- room: grey tiled floor, walls of sky-blue to cloud-white panels ---------- */
+const ROOM = 7.2, ROOM_H = 3.3, TILE = 0.4;
+function tileCanvas(){
+  // 2x2 tiles per texture repeat: grey and light grey squares separated by open lanes, like the wall panels
+  const n = 512, c = document.createElement('canvas'); c.width = c.height = n;
+  const g = c.getContext('2d'), r = rand(41), half = n/2;
+  const lane = Math.round(half * 0.03/TILE);   // 3 cm lanes
+  g.fillStyle = '#e7eaec'; g.fillRect(0, 0, n, n);
+  for(let i=0;i<2;i++) for(let j=0;j<2;j++){
+    const light = (i+j)%2 === 0;
+    const x = i*half + lane/2, y = j*half + lane/2, w = half - lane;
+    g.fillStyle = light ? '#c3c7cb' : '#878c91'; g.fillRect(x, y, w, w);
+    // faint stone clouding inside each square
+    g.save(); g.beginPath(); g.rect(x, y, w, w); g.clip();
+    for(let k=0;k<22;k++){
+      const cx = x + r()*w, cy = y + r()*w, rad = 20 + r()*80;
+      const gr = g.createRadialGradient(cx,cy,0,cx,cy,rad);
+      const col = r() < 0.5 ? '255,255,255' : '40,44,48';
+      gr.addColorStop(0, `rgba(${col},${0.04 + r()*0.05})`); gr.addColorStop(1, `rgba(${col},0)`);
+      g.fillStyle = gr; g.fillRect(cx-rad, cy-rad, rad*2, rad*2);
+    }
+    g.restore();
+  }
+  return c;
+}
+/* Each wall gets its own panel composition: the wall is split recursively into rectangles of many
+   sizes and proportions, each filled with a shade from sky blue through to cloud white. */
+function panelCanvas(seed){
+  const W = 1536, H = Math.round(W*ROOM_H/ROOM), c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'), r = rand(seed);
+  g.fillStyle = '#d3e1ea'; g.fillRect(0,0,W,H);   // the wall colour showing in the joints
+  const shades = ['#6fb4e3','#86c1e8','#9dcdee','#b5d9f1','#cbe4f4','#e1eff8','#f3f8fb'];
+  const gap = 7;
+  function split(x, y, w, h, depth){
+    const canSplit = depth < 6 && (w > 120 || h > 120) && !(depth > 2 && r() < 0.18);
+    if(canSplit){
+      const vertical = w/h > 1.3 ? true : h/w > 1.3 ? false : r() < 0.5;
+      const t = 0.25 + r()*0.5;
+      if(vertical){ const a = Math.round(w*t); split(x, y, a, h, depth+1); split(x+a, y, w-a, h, depth+1); }
+      else { const a = Math.round(h*t); split(x, y, w, a, depth+1); split(x, y+a, w, h-a, depth+1); }
+      return;
+    }
+    if(r() < 0.12) return;   // leave a few panels as plain wall
+    // shades lean light, with occasional strong sky blue
+    const k = Math.min(shades.length-1, Math.floor(Math.pow(r(), 0.8) * shades.length));
+    g.fillStyle = shades[k];
+    g.fillRect(x + gap/2, y + gap/2, w - gap, h - gap);
+    // a whisper of brush texture so large panels aren't flat plastic
+    g.globalAlpha = 0.05;
+    for(let i=0;i<Math.max(4, (w*h)/6000);i++){
+      g.fillStyle = r() < 0.5 ? '#ffffff' : '#5d8fb0';
+      g.fillRect(x + gap/2 + r()*(w-gap), y + gap/2 + r()*(h-gap), 4 + r()*40, 1 + r()*2);
+    }
+    g.globalAlpha = 1;
+  }
+  split(0, 0, W, H, 0);
+  return c;
+}
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM, ROOM),
+  new THREE.MeshPhysicalMaterial({map: tex(tileCanvas(), ROOM/(TILE*2), ROOM/(TILE*2)), roughness:0.35, clearcoat:0.6, clearcoatRoughness:0.08}));
+floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
+for(let k=0;k<4;k++){
+  const mWall = new THREE.MeshStandardMaterial({map: tex(panelCanvas(101 + k*37)), roughness:0.9});
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(ROOM, ROOM_H), mWall);
+  const a = k*Math.PI/2;
+  wall.position.set(-Math.sin(a)*ROOM/2, ROOM_H/2, -Math.cos(a)*ROOM/2);
+  wall.rotation.y = a; wall.receiveShadow = true; scene.add(wall);
+  const skirting = new THREE.Mesh(new THREE.BoxGeometry(ROOM, 0.12, 0.02), mLeg);
+  skirting.position.set(-Math.sin(a)*(ROOM/2-0.01), 0.06, -Math.cos(a)*(ROOM/2-0.01));
+  skirting.rotation.y = a; scene.add(skirting);
+}
+const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(ROOM, ROOM), new THREE.MeshStandardMaterial({color:0xf1c99c, roughness:1}));   // light orange
+ceiling.rotation.x = Math.PI/2; ceiling.position.y = ROOM_H; scene.add(ceiling);
+/* Orange disc shades hung below the ceiling. Each hides a lamp on its upper side that throws all its
+   light up onto the ceiling, so the room is lit by warm pools spreading out around the discs.
+   The lamp sits above the disc, so the disc's underside stays in its own shade and reads as a silhouette. */
+const mDiscBottom = new THREE.MeshStandardMaterial({color:0xe2701f, roughness:0.55, emissive:0x4a1a04, emissiveIntensity:1});
+const mDiscEdge = new THREE.MeshStandardMaterial({color:0xffa45a, roughness:0.5, emissive:0xff8a3a, emissiveIntensity:0.55});
+const mDiscTop = new THREE.MeshStandardMaterial({color:0xffc58a, emissive:0xffb066, emissiveIntensity:1});
+const mRod = new THREE.MeshStandardMaterial({color:0x2a2420, roughness:0.4, metalness:0.6});
+[[-1.75, 2.86, -1.45, 0.38], [1.95, 2.92, -1.10, 0.30], [1.55, 2.80, 1.85, 0.44], [-1.65, 2.90, 1.70, 0.33]].forEach(([x, y, z, r]) => {
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.014, 64), [mDiscEdge, mDiscTop, mDiscBottom]);
+  disc.position.set(x, y, z); scene.add(disc);
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, ROOM_H - y, 8), mRod);
+  rod.position.set(x, (ROOM_H + y)/2, z); scene.add(rod);
+  const lamp = new THREE.PointLight(0xffb36e, 0.95, 3.2, 2);
+  lamp.position.set(x, y + 0.1, z); scene.add(lamp);
+});
+/* ---------- carrom board ---------- */
+const board = new THREE.Group();
+const pocketCentres = [[1,1],[1,-1],[-1,1],[-1,-1]].map(([sx,sz]) => [sx*(HL-POCKET_R), sz*(HL-POCKET_R)]);
+
+function surfaceShape(){
+  const s = new THREE.Shape();
+  s.moveTo(-HL,-HL); s.lineTo(HL,-HL); s.lineTo(HL,HL); s.lineTo(-HL,HL); s.closePath();
+  pocketCentres.forEach(([x,y])=>{ const h = new THREE.Path(); h.absarc(x, y, POCKET_R, 0, Math.PI*2, true); s.holes.push(h); });
+  return s;
+}
+// top face with markings
+const sg = new THREE.ShapeGeometry(surfaceShape(), 48);
+const uv = sg.attributes.uv, pos = sg.attributes.position;
+for(let i=0;i<uv.count;i++) uv.setXY(i, (pos.getX(i)+HL)/L, (pos.getY(i)+HL)/L);
+const surface = new THREE.Mesh(sg, mSurface);
+surface.rotation.x = -Math.PI/2;
+surface.position.y = SURF; surface.receiveShadow = true; board.add(surface);
+/* Reflection layer: a mirror render of the scene, added on top of the jade (like light bouncing off
+   a polished surface), never mixed into it. Strength follows Fresnel: faint looking straight down,
+   strong toward grazing angles. Coplanar with the jade and pulled forward with polygon offset. */
+let mirrorMesh = null;
+if(THREE.Reflector){
+  const rs = Math.min(matchMedia('(pointer: coarse)').matches ? 1024 : 1536, Math.round(Math.max(window.innerWidth, window.innerHeight) * Math.min(window.devicePixelRatio||1, 2)));
+  const glossShader = {
+    uniforms: { color:{value:null}, tDiffuse:{value:null}, textureMatrix:{value:null}, f0:{value:0.25}, strength:{value:1.0} },
+    vertexShader: `
+      uniform mat4 textureMatrix; varying vec4 vUv; varying vec3 vWorld;
+      void main(){ vUv = textureMatrix * vec4(position, 1.0); vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `
+      uniform vec3 color; uniform sampler2D tDiffuse; uniform float f0; uniform float strength;
+      varying vec4 vUv; varying vec3 vWorld;
+      void main(){
+        float c = clamp(normalize(cameraPosition - vWorld).y, 0.0, 1.0);
+        float F = f0 + (1.0 - f0) * pow(1.0 - c, 3.0);
+        vec3 refl = pow(max(texture2DProj(tDiffuse, vUv).rgb, 0.0), vec3(1.0/2.2)) * color;
+        gl_FragColor = vec4(refl, clamp(F * strength, 0.0, 1.0));
+      }`
+  };
+  const mirror = new THREE.Reflector(sg, {textureWidth:rs, textureHeight:rs, color:0xffffff, clipBias:0.0003, shader:glossShader});
+  Object.assign(mirror.material, {transparent:true, blending:THREE.AdditiveBlending, depthWrite:false, toneMapped:false,
+    polygonOffset:true, polygonOffsetFactor:-4, polygonOffsetUnits:-8});
+  mirror.rotation.x = -Math.PI/2;
+  mirror.position.y = SURF;
+  mirror.renderOrder = 2;
+  const mirrorPass = mirror.onBeforeRender;
+  mirror.onBeforeRender = function(...a){ surface.visible = false; mirrorPass.apply(this, a); surface.visible = true; };
+  board.add(mirror);
+  mirrorMesh = mirror;
+}
+// plywood body under it
+const PLY = 0.008;
+const pg = new THREE.ExtrudeGeometry(surfaceShape(), {depth:PLY - 0.0005, bevelEnabled:false, curveSegments:48});
+pg.rotateX(-Math.PI/2);
+const ply = new THREE.Mesh(pg, mPly);
+ply.position.y = SURF - PLY; ply.castShadow = true; board.add(ply);
+
+// frame: one bevelled ring
+const fs = new THREE.Shape();
+const FO = HL + FRAME, B = 0.005;
+fs.moveTo(-(FO-B),-(FO-B)); fs.lineTo(FO-B,-(FO-B)); fs.lineTo(FO-B,FO-B); fs.lineTo(-(FO-B),FO-B); fs.closePath();
+const fh = new THREE.Path();
+fh.moveTo(-(HL+B),-(HL+B)); fh.lineTo(-(HL+B),HL+B); fh.lineTo(HL+B,HL+B); fh.lineTo(HL+B,-(HL+B)); fh.closePath();
+fs.holes.push(fh);
+const fg = new THREE.ExtrudeGeometry(fs, {depth:FRAME_H - 2*B, bevelEnabled:true, bevelThickness:B, bevelSize:B, bevelSegments:3});
+fg.rotateX(-Math.PI/2);
+const frame = new THREE.Mesh(fg, mFrame);
+frame.position.y = TABLE_TOP + FEET + B; frame.castShadow = frame.receiveShadow = true; board.add(frame);
+// rubber feet
+[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([sx,sz])=>{
+  const f = new THREE.Mesh(new THREE.CylinderGeometry(0.018,0.02,FEET,20), mRubber);
+  f.position.set(sx*(FO-0.035), TABLE_TOP + FEET/2, sz*(FO-0.035)); board.add(f);
+});
+// pocket throats and nets
+pocketCentres.forEach(([x,y])=>{
+  const throat = new THREE.Mesh(new THREE.CylinderGeometry(POCKET_R, POCKET_R, PLY, 32, 1, true), mHole);
+  throat.position.set(x, SURF - PLY/2, -y); board.add(throat);
+  const net = new THREE.Mesh(new THREE.SphereGeometry(POCKET_R*1.15, 24, 12, 0, Math.PI*2, Math.PI/2, Math.PI/2), mNet);
+  net.scale.y = 1.25;
+  net.position.set(x, SURF - PLY, -y); board.add(net);
+});
+scene.add(board);
+
+/* ---------- reflections for glossy things: two live probes ----------
+   boardProbe sits just above the board and feeds the armed striker and the polished wood;
+   ceilingProbe sits up among the hanging balls and feeds them. */
+function makeProbe(size, pos){
+  const rt = new THREE.WebGLCubeRenderTarget(size, {generateMipmaps:true, minFilter:THREE.LinearMipmapLinearFilter, encoding:THREE.sRGBEncoding});
+  const cam = new THREE.CubeCamera(0.03, 12, rt); cam.position.copy(pos); scene.add(cam);
+  return {rt, cam};
+}
+const boardProbe = makeProbe(128, new THREE.Vector3(0, SURF + 0.3, 0));
+const ceilingProbe = makeProbe(128, new THREE.Vector3(0, 2.45, 0));
+const ballEnvRT = boardProbe.rt;   // feeds the armed striker
+[mFrame, mTable, mLeg].forEach(m => { m.envMap = boardProbe.rt.texture; m.needsUpdate = true; });   // polished wood reflects the room
+
+/* ---------- red phenolic-resin balls hanging from the ceiling ---------- */
+const mBigBall = new THREE.MeshPhysicalMaterial({color:0xb3120c, roughness:0.06, metalness:0, clearcoat:1, clearcoatRoughness:0.01,
+  envMap:ceilingProbe.rt.texture, envMapIntensity:1});
+const mThread = new THREE.MeshStandardMaterial({color:0xd8d0c0, roughness:0.9});
+const hangingBalls = new THREE.Group();
+[[0.9, 2.45, -1.6, 0.16], [-1.3, 2.62, 0.2, 0.20], [0.35, 2.32, 1.95, 0.13]].forEach(([x, y, z, r]) => {
+  const b = new THREE.Mesh(new THREE.SphereGeometry(r, 64, 48), mBigBall);
+  b.position.set(x, y, z); b.castShadow = true; hangingBalls.add(b);
+  const top = y + r, len = ROOM_H - top;
+  const t = new THREE.Mesh(new THREE.CylinderGeometry(0.0008, 0.0008, len, 6), mThread);
+  t.position.set(x, top + len/2, z); hangingBalls.add(t);
+});
+scene.add(hangingBalls);
+
+let probeFrame = 0;
+function updateProbes(){
+  const f = probeFrame++ % 6;
+  if(f !== 0 && f !== 3) return;   // alternate the two probes, each refreshed every sixth frame
+  if(mirrorMesh) mirrorMesh.visible = false;
+  if(f === 0){ boardProbe.cam.update(renderer, scene); }
+  else { hangingBalls.visible = false; ceilingProbe.cam.update(renderer, scene); hangingBalls.visible = true; }
+  if(mirrorMesh) mirrorMesh.visible = true;
+}
+
+/* ---------- coins & striker ---------- */
+function coinGeometry(R, H, grooves){
+  const e = 0.0009, d = 0.0005, pts = [new THREE.Vector2(0,0), new THREE.Vector2(R-e,0), new THREE.Vector2(R,e),
+    new THREE.Vector2(R,H-e), new THREE.Vector2(R-e,H)];
+  grooves.slice().sort((a,b)=>b-a).forEach(f=>{
+    const gr = R*f;
+    pts.push(new THREE.Vector2(gr+0.0006,H), new THREE.Vector2(gr,H-d), new THREE.Vector2(gr-0.0006,H));
+  });
+  pts.push(new THREE.Vector2(0,H));
+  const g = new THREE.LatheGeometry(pts, 48);
+  g.computeVertexNormals();
+  return g;
+}
+const coinGeo = coinGeometry(COIN_R, COIN_H, [0.82, 0.55]);
+const mWhite = new THREE.MeshStandardMaterial({color:0xefe2c4, roughness:0.6, side:THREE.DoubleSide});
+const mBlack = new THREE.MeshStandardMaterial({color:0x1b1613, roughness:0.6, side:THREE.DoubleSide});
+const mQueen = new THREE.MeshStandardMaterial({color:0xb8241c, roughness:0.6, side:THREE.DoubleSide});
+const mStriker = new THREE.MeshPhysicalMaterial({color:0xf6f3ea, roughness:0.45, clearcoat:0.2, clearcoatRoughness:0.5, side:THREE.DoubleSide});
+
+// armed: solid red hard plastic with a glossy clear coat
+const mStrikerArmed = new THREE.MeshPhysicalMaterial({color:0xb3120c, roughness:0.06, metalness:0, clearcoat:1, clearcoatRoughness:0.01,
+  envMap:ballEnvRT.texture, envMapIntensity:1, side:THREE.DoubleSide});   // same red phenolic resin as the pool ball
+const COIN_M = 0.0055, STRIKER_M = 0.015;   // 5.5 g coins, 15 g striker
+const discs = [];
+function makeDisc(mat, geo, r, mass){
+  const m = new THREE.Mesh(geo, mat);
+  m.rotation.y = Math.random()*Math.PI;
+  m.castShadow = m.receiveShadow = true;
+  board.add(m);
+  const d = {mesh:m, r, mass, vx:0, vz:0, state:'play', fall:0, px:0, pz:0};
+  discs.push(d); return d;
+}
+// standard break formation: queen in the centre, hexagonal rings around it
+const D = COIN_R*2 + 0.0004, layout = [];
+layout.push([0, 0, makeDisc(mQueen, coinGeo, COIN_R, COIN_M)]);
+for(let i=0;i<6;i++){ const a = i*Math.PI/3; layout.push([Math.cos(a)*D, Math.sin(a)*D, makeDisc(i%2?mBlack:mWhite, coinGeo, COIN_R, COIN_M)]); }
+for(let i=0;i<6;i++){
+  const a = i*Math.PI/3; layout.push([Math.cos(a)*2*D, Math.sin(a)*2*D, makeDisc(i%2?mWhite:mBlack, coinGeo, COIN_R, COIN_M)]);
+  const b = a + Math.PI/6; layout.push([Math.cos(b)*D*Math.sqrt(3), Math.sin(b)*D*Math.sqrt(3), makeDisc(i%2?mBlack:mWhite, coinGeo, COIN_R, COIN_M)]);
+}
+// striker rests on the near baseline
+function ringGeometry(Ri, Ro, H){
+  const e = 0.0012;
+  const pts = [[Ri+e,0],[Ro-e,0],[Ro,e],[Ro,H-e],[Ro-e,H],[Ri+e,H],[Ri,H-e],[Ri,e],[Ri+e,0]].map(([x,y]) => new THREE.Vector2(x,y));
+  const g = new THREE.LatheGeometry(pts, 64);
+  g.computeVertexNormals();
+  return g;
+}
+const strikerGeo = ringGeometry(STRIKER_IN, STRIKER_R, STRIKER_H);
+const striker = makeDisc(mStriker, strikerGeo, STRIKER_R, STRIKER_M);
+striker.decel = 0.12; striker.drag = 0.025;   // the ring glides more freely than the coins
+const STRIKER_HOME = [0, HL - 0.1015 - 0.0159];
+function placeDisc(d, x, z){
+  d.mesh.position.set(x, SURF + 0.0002, z); d.mesh.scale.set(1,1,1); d.mesh.visible = true;
+  d.vx = d.vz = 0; d.state = 'play'; d.fall = 0;
+}
+function resetBoard(){ layout.forEach(([x,z,d]) => placeDisc(d, x, z)); placeDisc(striker, STRIKER_HOME[0], STRIKER_HOME[1]); }
+resetBoard();
+
+/* ---------- physics: sliding discs, elastic hits, cushion bounces, pockets ---------- */
+const DECEL = 0.25, DRAG = 0.05, E_DISC = 0.9, E_WALL = 0.7;
+const POCKETS = pocketCentres.map(([x,y]) => [x, -y]);
+function physics(dt){
+  const n = 10, h = dt/n;
+  for(let s=0;s<n;s++){
+    for(const d of discs){
+      if(d.state !== 'play') continue;
+      const p = d.mesh.position;
+      p.x += d.vx*h; p.z += d.vz*h;
+      const sp = Math.hypot(d.vx, d.vz);
+      if(sp > 0){ const ns = Math.max(0, sp - ((d.decel ?? DECEL) + (d.drag ?? DRAG)*sp)*h); d.vx *= ns/sp; d.vz *= ns/sp; d.mesh.rotation.y += sp*h*8; }
+      if(d.r < POCKET_R) for(const [px,pz] of POCKETS){   // the wide ring striker can't drop through a pocket
+        if(Math.hypot(p.x-px, p.z-pz) < POCKET_R*0.85){ d.state = 'falling'; d.fall = 0; d.px = px; d.pz = pz; d.vx = d.vz = 0; break; }
+      }
+      if(d.state !== 'play') continue;
+      const lim = HL - d.r;
+      if(p.x >  lim){ p.x =  lim; d.vx = -Math.abs(d.vx)*E_WALL; }
+      if(p.x < -lim){ p.x = -lim; d.vx =  Math.abs(d.vx)*E_WALL; }
+      if(p.z >  lim){ p.z =  lim; d.vz = -Math.abs(d.vz)*E_WALL; }
+      if(p.z < -lim){ p.z = -lim; d.vz =  Math.abs(d.vz)*E_WALL; }
+    }
+    for(let i=0;i<discs.length;i++){
+      const a = discs[i]; if(a.state !== 'play') continue;
+      for(let j=i+1;j<discs.length;j++){
+        const b = discs[j]; if(b.state !== 'play') continue;
+        const pa = a.mesh.position, pb = b.mesh.position;
+        const dx = pb.x-pa.x, dz = pb.z-pa.z, dist = Math.hypot(dx,dz), min = a.r + b.r;
+        if(dist >= min || dist < 1e-7) continue;
+        const nx = dx/dist, nz = dz/dist, over = min - dist, wa = b.mass/(a.mass+b.mass), wb = a.mass/(a.mass+b.mass);
+        pa.x -= nx*over*wa; pa.z -= nz*over*wa; pb.x += nx*over*wb; pb.z += nz*over*wb;
+        const vn = (b.vx-a.vx)*nx + (b.vz-a.vz)*nz;
+        if(vn >= 0) continue;
+        const J = -(1+E_DISC)*vn / (1/a.mass + 1/b.mass);
+        a.vx -= J/a.mass*nx; a.vz -= J/a.mass*nz; b.vx += J/b.mass*nx; b.vz += J/b.mass*nz;
+      }
+    }
+  }
+  for(const d of discs){
+    if(d.state !== 'falling') continue;
+    d.fall += dt; const t = Math.min(1, d.fall/0.32), p = d.mesh.position;
+    p.x += (d.px-p.x)*0.35; p.z += (d.pz-p.z)*0.35; p.y = SURF + 0.0002 - t*0.022;
+    d.mesh.scale.setScalar(1 - t*0.25);
+    if(t >= 1){ d.state = 'gone'; d.mesh.visible = false; }
+  }
+}
+function returnStriker(){
+  // back to the near baseline; slide sideways along it if a coin is sitting on the home spot
+  let x = STRIKER_HOME[0];
+  const z = STRIKER_HOME[1];
+  const blocked = x0 => discs.some(d => d !== striker && d.state === 'play' && Math.hypot(d.mesh.position.x-x0, d.mesh.position.z-z) < d.r + STRIKER_R);
+  for(let k=0;k<24 && blocked(x);k++) x = (k%2 ? 1 : -1) * Math.ceil((k+1)/2) * 0.02;
+  placeDisc(striker, x, z);
+}
+function sanitize(){
+  for(const d of discs){
+    const p = d.mesh.position;
+    if(!isFinite(p.x) || !isFinite(p.z) || !isFinite(d.vx) || !isFinite(d.vz)){ d.vx = d.vz = 0; p.x = 0; p.z = 0; d.state = 'gone'; d.mesh.visible = false; }
+  }
+}
+function boardAtRest(){ return discs.every(d => d.state === 'gone' || (d.state === 'play' && Math.hypot(d.vx,d.vz) < 1e-3)); }
+
+// aim guide shown while a flick is in progress
+const aimLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({color:0xff5a4a, transparent:true, opacity:0.85}));
+aimLine.visible = false; aimLine.frustumCulled = false; board.add(aimLine);
+
+/* ---------- camera rig: orbit around board centre, free height ---------- */
+const H_MIN = 0.45, H_MAX = 3.0, R_MAX = 3.0, R_TINY = 0.004, R_SAFE = 0.78, H_CLEAR = SURF + 0.09;
+const goal = {az: 0.35, h: 1.5, r: 1.1};
+const cur = {...goal};
+function clampGoal(){
+  goal.h = Math.min(H_MAX, Math.max(H_MIN, goal.h));
+  goal.r = Math.min(R_MAX, Math.max(R_TINY, goal.r));
+  if(goal.h < H_CLEAR) goal.r = Math.max(goal.r, R_SAFE); // stay outside the table when below the board
+}
+function place(){
+  camera.position.set(target.x + Math.sin(cur.az)*cur.r, cur.h, target.z + Math.cos(cur.az)*cur.r);
+  camera.lookAt(target);
+}
+
+/* ---------- armed mode: flick the striker ---------- */
+const FLICK_GAIN = 0.75, V_MAX = 4.5, WINDOW = 120;   // finger speed on the board plane x gain, capped at 4.5 m/s
+const ray = new THREE.Raycaster(), hitPlane = new THREE.Plane(new THREE.Vector3(0,1,0), -(SURF + STRIKER_H/2));
+let armed = false, aimOrbit = null, aim = null, downInfo = null, lastTap = null, shotLive = false, restTime = 0;
+function boardPoint(e){
+  const r = canvas.getBoundingClientRect();
+  ray.setFromCamera({x:((e.clientX-r.left)/r.width)*2-1, y:-((e.clientY-r.top)/r.height)*2+1}, camera);
+  const v = new THREE.Vector3();
+  return ray.ray.intersectPlane(hitPlane, v) ? v : null;
+}
+function flickVelocity(now){
+  const sm = aim.samples.filter(s => now - s.t <= WINDOW);
+  if(sm.length < 2) return null;
+  const a = sm[0], b = sm[sm.length-1], dt = (b.t - a.t)/1000;
+  if(dt <= 0) return null;
+  let vx = (b.x-a.x)/dt*FLICK_GAIN, vz = (b.z-a.z)/dt*FLICK_GAIN, sp = Math.hypot(vx,vz);
+  if(sp > V_MAX){ vx *= V_MAX/sp; vz *= V_MAX/sp; sp = V_MAX; }
+  return {vx, vz, sp};
+}
+function updateAimLine(now){
+  const v = flickVelocity(now), s = striker.mesh.position;
+  if(!v || v.sp < 0.05){ aimLine.visible = false; return; }
+  const len = Math.min(0.45, v.sp*0.07), y = SURF + 0.002;
+  aimLine.geometry.setFromPoints([new THREE.Vector3(s.x, y, s.z), new THREE.Vector3(s.x + v.vx/v.sp*len, y, s.z + v.vz/v.sp*len)]);
+  aimLine.visible = true;
+}
+function armedDown(e){
+  const now = performance.now();
+  downInfo = {id:e.pointerId, x:e.clientX, y:e.clientY, t:now};
+  const p = boardPoint(e), s = striker.mesh.position;
+  if(p && striker.state === 'play' && !shotLive && Math.hypot(p.x-s.x, p.z-s.z) < STRIKER_R*1.6){
+    aim = {id:e.pointerId, samples:[{t:now, x:p.x, z:p.z}]};
+  } else if(!aimOrbit){
+    aimOrbit = {id:e.pointerId, x:e.clientX};   // off the striker: turn the view to aim (height stays locked)
+  }
+}
+function armedMove(e){
+  if(aimOrbit && aimOrbit.id === e.pointerId){ goal.az -= (e.clientX - aimOrbit.x)*0.006; aimOrbit.x = e.clientX; return; }
+  if(!aim || aim.id !== e.pointerId) return;
+  const p = boardPoint(e); if(!p) return;
+  const now = performance.now();
+  aim.samples.push({t:now, x:p.x, z:p.z});
+  if(aim.samples.length > 40) aim.samples.shift();
+  updateAimLine(now);
+}
+function armedUp(e){
+  const now = performance.now();
+  let isTap = false;
+  if(downInfo && downInfo.id === e.pointerId){
+    isTap = now - downInfo.t < 280 && Math.hypot(e.clientX-downInfo.x, e.clientY-downInfo.y) < 12;
+    downInfo = null;
+  }
+  if(aimOrbit && aimOrbit.id === e.pointerId) aimOrbit = null;
+  if(aim && aim.id === e.pointerId){
+    const v = isTap ? null : flickVelocity(now);
+    if(v && v.sp > 0.08){ striker.vx = v.vx; striker.vz = v.vz; shotLive = true; restTime = 0; }
+    aim = null; aimLine.visible = false;
+  }
+  if(isTap){
+    if(lastTap && now - lastTap.t < 380 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 40){ lastTap = null; setArmed(false); }
+    else lastTap = {t:now, x:e.clientX, y:e.clientY};
+  }
+}
+
+const pointers = new Map();
+let pinchPrev = 0, midPrev = null;
+function heightGain(){ return 0.0035 * Math.max(0.6, Math.hypot(cur.r, cur.h - SURF)); }
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  if(armed){ armedDown(e); return; }
+  pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(pointers.size === 2){ const [a,b] = [...pointers.values()]; pinchPrev = Math.hypot(a.x-b.x, a.y-b.y); midPrev = {x:(a.x+b.x)/2, y:(a.y+b.y)/2}; }
+});
+canvas.addEventListener('pointermove', e => {
+  if(armed){ armedMove(e); return; }
+  if(!pointers.has(e.pointerId)) return;
+  const p = pointers.get(e.pointerId), dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  if(pointers.size === 1){
+    goal.az -= dx * 0.007;
+    goal.h += dy * heightGain();
+  } else if(pointers.size === 2){
+    const [a,b] = [...pointers.values()];
+    const dist = Math.hypot(a.x-b.x, a.y-b.y), mid = {x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+    if(pinchPrev > 0) goal.r *= pinchPrev / dist;
+    if(midPrev){ goal.az -= (mid.x-midPrev.x)*0.007; goal.h += (mid.y-midPrev.y)*heightGain(); }
+    pinchPrev = dist; midPrev = mid;
+  }
+  clampGoal();
+});
+function release(e){ if(armed){ armedUp(e); return; } pointers.delete(e.pointerId); pinchPrev = 0; midPrev = null;
+  if(pointers.size === 2){ const [a,b] = [...pointers.values()]; pinchPrev = Math.hypot(a.x-b.x,a.y-b.y); midPrev = {x:(a.x+b.x)/2,y:(a.y+b.y)/2}; } }
+canvas.addEventListener('pointerup', release);
+canvas.addEventListener('pointercancel', release);
+canvas.addEventListener('wheel', e => { e.preventDefault(); if(armed) return; goal.r *= Math.exp(e.deltaY*0.0012); clampGoal(); }, {passive:false});
+canvas.addEventListener('keydown', e => {
+  const k = e.key;
+  if(armed){ if(k === 'Escape'){ setArmed(false); e.preventDefault(); } return; }
+  if(k==='ArrowLeft') goal.az += 0.08; else if(k==='ArrowRight') goal.az -= 0.08;
+  else if(k==='ArrowUp') goal.h += 0.05; else if(k==='ArrowDown') goal.h -= 0.05;
+  else if(k==='+'||k==='=') goal.r *= 0.92; else if(k==='-') goal.r *= 1.08; else return;
+  e.preventDefault(); clampGoal();
+});
+
+/* ---------- controls tray ---------- */
+const hRange = document.getElementById('hRange'), dRange = document.getElementById('dRange');
+const hOut = document.getElementById('hOut'), dOut = document.getElementById('dOut');
+let sliding = false;
+[hRange, dRange].forEach(el => {
+  el.addEventListener('pointerdown', ()=> sliding = true);
+  el.addEventListener('pointerup', ()=> sliding = false);
+  el.addEventListener('blur', ()=> sliding = false);
+});
+hRange.addEventListener('input', ()=>{ goal.h = hRange.value/100; clampGoal(); });
+dRange.addEventListener('input', ()=>{ goal.r = Math.max(R_TINY, dRange.value/100); clampGoal(); });
+function preset(az, h, r){ goal.az = cur.az + Math.atan2(Math.sin(az-cur.az), Math.cos(az-cur.az)); goal.h = h; goal.r = r; clampGoal(); }
+document.getElementById('bPlayer').onclick = ()=> preset(0, 1.22, 0.62);
+document.getElementById('bTop').onclick = ()=> preset(cur.az, 1.95, R_TINY);
+document.getElementById('bLow').onclick = ()=> preset(cur.az, SURF + 0.06, 0.9);
+document.getElementById('bWide').onclick = ()=> preset(0.7, 2.1, 2.6);
+
+const tray = document.getElementById('tray'), bArm = document.getElementById('bArm'), pill = document.getElementById('pill');
+function setArmed(on){
+  armed = on;
+  pointers.clear(); pinchPrev = 0; midPrev = null; aim = null; aimOrbit = null; aimLine.visible = false; lastTap = null;
+  if(on){
+    goal.az = cur.az; goal.h = cur.h; goal.r = cur.r;          // freeze the view exactly where it is
+    if(striker.state !== 'play') placeDisc(striker, STRIKER_HOME[0], STRIKER_HOME[1]);
+  }
+  striker.mesh.material = on ? mStrikerArmed : mStriker;
+  tray.hidden = on;
+  pill.hidden = !on;
+  if(!on) trayLockUntil = performance.now() + 450;
+}
+let trayLockUntil = 0;
+tray.addEventListener('click', e => { if(performance.now() < trayLockUntil){ e.stopPropagation(); e.preventDefault(); } }, true);
+canvas.addEventListener('dblclick', e => { if(armed){ e.preventDefault(); setArmed(false); } });
+bArm.onclick = () => setArmed(true);
+document.getElementById('bReset').onclick = () => { resetBoard(); shotLive = false; };
+
+function syncTray(){
+  hOut.textContent = cur.h.toFixed(2) + ' m';
+  dOut.textContent = cur.r.toFixed(2) + ' m';
+  if(!sliding){ hRange.value = Math.round(goal.h*100); dRange.value = Math.round(goal.r*100); }
+}
+
+/* ---------- loop ---------- */
+function resize(){
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h;
+  camera.fov = w/h < 0.8 ? 58 : 45;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize); resize();
+
+let last = performance.now();
+function tick(now){
+  requestAnimationFrame(tick);   // schedule first so one bad frame can never stop the loop
+  try { step(now); } catch(err){ console.error(err); }
+}
+function step(now){
+  const dt = Math.min(0.05, Math.max(0, (now-last)/1000)); last = now;
+  const k = 1 - Math.exp(-dt*12);
+  cur.az += (goal.az-cur.az)*k; cur.h += (goal.h-cur.h)*k; cur.r += (goal.r-cur.r)*k;
+  physics(dt); sanitize(); updateProbes();
+  if(shotLive){
+    restTime = boardAtRest() ? restTime + dt : 0;
+    if(restTime > 0.5){ returnStriker(); shotLive = false; }
+  } else if(striker.state === 'gone' && boardAtRest()) returnStriker();
+  place(); syncTray();
+  if(armed){
+    const t = shotLive ? '<b>Armed</b> · wait for the coins to stop' : '<b>Armed</b> · flick the striker · drag elsewhere to turn · double-tap to disarm';
+    if(pill.innerHTML !== t) pill.innerHTML = t;
+  }
+  renderer.render(scene, camera);
+}
+clampGoal(); place(); requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
