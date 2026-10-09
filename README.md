@@ -10,6 +10,7 @@ Open `index.html` in a browser (or serve the folder with any static server, or t
 - Smoky translucent orange frame on a lacquered birch table with a few dark grain lines
 - Hollow ring striker, 19 coins in the standard break formation
 - Room with sky-blue panel walls, grey tiled floor, orange disc uplights and hanging red resin balls
+- A flush door cut from the back wall: panels run straight across it, a thin seam, set 5 mm into the wall, with a glossy sky-blue lever handle
 
 ## Controls
 **Viewing** – drag sideways to orbit, drag up/down to change eye height, pinch or scroll to zoom. Sliders and preset views are in the bottom tray. The camera always looks at the centre of the board.
